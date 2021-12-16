@@ -2,6 +2,9 @@ CIFS Flexvolume Plugin for Kubernetes
 =====================================
 
 Driver for [CIFS][1] (SMB, Samba, Windows Share) network filesystems as [Kubernetes volumes][2].
+This release is forked from [github.com/fstab/cifs][8], to add kerberos authentification support to mount.cifs.
+It supports NTLM and Kerberos Authentification as a dedicated option 'authprotocol' parameter and is designed for abcdesktop.io.
+Kerberos keytab is more secure than username and password protected by base64. 
 
 Background
 ----------
@@ -10,10 +13,10 @@ Docker containers running in Kubernetes have an ephemeral file system: Once a co
 
 Fortunately, Kubernetes provides [Flexvolume][7], which is a plugin mechanism enabling users to write their own drivers. There are a few flexvolume drivers for CIFS out there, but for different reasons none of them seemed to work for me. So I wrote my own, which can be found on [github.com/fstab/cifs][8].
 
-Installing
-----------
+Installing for abcdesktop
+-------------------------
 
-The flexvolume plugin is a single shell script named [cifs][8]. This shell script must be available on the Kubernetes master and on each of the Kubernetes nodes. By default, Kubernetes searches for third party volume plugins in `/usr/libexec/kubernetes/kubelet-plugins/volume/exec/`. The plugin directory can be configured with the kubelet's `--volume-plugin-dir` parameter, run `ps aux | grep kubelet` to learn the location of the plugin directory on your system (see [#1][9]). The `cifs` script must be located in a subdirectory named `fstab~cifs/`. The directory name `fstab~cifs/` will be [mapped][10] to the Flexvolume driver name `fstab/cifs`.
+The flexvolume plugin is a single shell script named [cifs][8]. This shell script must be available on the Kubernetes master and on each of the Kubernetes nodes. By default, Kubernetes searches for third party volume plugins in `/usr/libexec/kubernetes/kubelet-plugins/volume/exec/`. The plugin directory can be configured with the kubelet's `--volume-plugin-dir` parameter, run `ps aux | grep kubelet` to learn the location of the plugin directory on your system (see [#1][9]). The `cifs` script must be located in a subdirectory named `abcdesktop~cifs/`. The directory name `abcdesktop~cifs/` will be [mapped][10] to the Flexvolume driver name `abcdesktop/cifs`.
 
 On the Kubernetes master and on each Kubernetes node run the following commands:
 
@@ -21,7 +24,7 @@ On the Kubernetes master and on each Kubernetes node run the following commands:
 VOLUME_PLUGIN_DIR="/usr/libexec/kubernetes/kubelet-plugins/volume/exec"
 mkdir -p "$VOLUME_PLUGIN_DIR/fstab~cifs"
 cd "$VOLUME_PLUGIN_DIR/fstab~cifs"
-curl -L -O https://raw.githubusercontent.com/fstab/cifs/master/cifs
+curl -L -O https://raw.githubusercontent.com/abcdesktop/cifs/master/cifs
 chmod 755 cifs
 ```
 
@@ -31,27 +34,33 @@ The `cifs` script requires a few executables to be available on each host system
 * `jq`, on Ubuntu this is in the [jq][12] package.
 * `mountpoint`, on Ubuntu this is in the [util-linux][13] package.
 * `base64`, on Ubuntu this is in the [coreutils][14] package.
+* `krb5-user`, on Ubuntu this is in the [krb5-user][16] package.
+* `kinit`, on Ubuntu this is in the [kinit][17] package.
 
 To check if the installation was successful, run the following command:
 
 ```bash
 VOLUME_PLUGIN_DIR="/usr/libexec/kubernetes/kubelet-plugins/volume/exec"
-$VOLUME_PLUGIN_DIR/fstab~cifs/cifs init
+$VOLUME_PLUGIN_DIR/abcdesktop~cifs/cifs init
 ```
 
 It should output a JSON string containing `"status": "Success"`. This command is also run by Kubernetes itself when the cifs plugin is detected on the file system.
 
-Running
--------
+
+
+
+Running with NTLM auth
+----------------------
 
 The plugin takes the CIFS username and password from a [Kubernetes Secret][15]. To create the secret, you first have to convert your username and password to base64 encoding:
 
 ```bash
 echo -n username | base64
 echo -n password | base64
+echo -n ntlm     | base64
 ```
 
-Then, create a file `secret.yml` and use the ouput of the above commands as username and password:
+Then, create a file `secret.yml` and use the ouput of the above commands as username, password and authprotocol :
 
 ```yaml
 apiVersion: v1
@@ -59,10 +68,11 @@ kind: Secret
 metadata:
   name: cifs-secret
   namespace: default
-type: fstab/cifs
+type: abcdesktop/cifs
 data:
   username: 'ZXhhbXBsZQ=='
   password: 'bXktc2VjcmV0LXBhc3N3b3Jk'
+  authprotocol: 'bnRsbQ=='
 ```
 
 Apply the secret:
@@ -138,3 +148,6 @@ Inside the container, you should see the CIFS share mounted to `/data`.
 [13]: https://packages.ubuntu.com/bionic/util-linux
 [14]: https://packages.ubuntu.com/bionic/coreutils
 [15]: https://kubernetes.io/docs/concepts/configuration/secret/
+[16]: https://packages.ubuntu.com/bionic/krb5-user
+[17]: https://packages.ubuntu.com/bionic/kinit
+
