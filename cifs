@@ -13,7 +13,7 @@ set -u
 # metadata:
 #   name: cifs-secret
 #   namespace: default
-# type: fstab/cifs
+# type: abcdesktop/cifs
 # data:
 #   username: 'ZXhhbXBsZQo='
 #   password: 'c2VjcmV0Cg=='
@@ -40,7 +40,7 @@ set -u
 #   volumes:
 #   - name: test
 #     flexVolume:
-#       driver: "fstab/cifs"
+#       driver: "abcdesktop/cifs"
 #       fsType: "cifs"
 #       secretRef:
 #         name: "cifs-secret"
@@ -54,12 +54,27 @@ set -u
 # date >> /tmp/cifs.log
 # echo "$@" >> /tmp/cifs.log
 
+
+
+# The log file content has changed
+# Format is 
+# date +%F+%T STATUS STRING
+# STATUS can be SUCCESS WARNING DEBUG ERROR
+# Example 
+#  2022-12-12+11:34:31 ERROR: cifs driver read bad values
+#  2022-12-12+11:35:15 DEBUG: cifs driver debug message
+#  2022-12-12+11:35:57 SUCCESS: { "command": "mount -t cifs", "networkPath": "bar", "mountPoint":"foo", "options":"username=USER", "exit": "0", "result" : "0" }
+# 
+DATEFORMAT=+%F+%T
+ABCDESKTOPLOGPATH=/var/log/abcdesktop/cifs
+
 init() {
+	mkdir -p $ABCDESKTOPLOGPATH
 	assertBinaryInstalled mount.cifs cifs-utils
 	assertBinaryInstalled jq jq
 	assertBinaryInstalled mountpoint util-linux
 	assertBinaryInstalled base64 coreutils
-	echo '{ "status": "Success", "message": "The fstab/cifs flexvolume plugin was initialized successfully", "capabilities": { "attach": false } }'
+	echo '{ "status": "Success", "message": "The abcdesktop/cifs flexvolume plugin was initialized successfully", "capabilities": { "attach": false } }'
 	exit 0
 }
 
@@ -67,20 +82,25 @@ assertBinaryInstalled() {
 	binary="$1"
 	package="$2"
 	if ! which "$binary" > /dev/null ; then
-		errorExit "Failed to initialize the fstab/cifs flexvolume plugin. $binary command not found. Please install the $package package."
+		errorExit "Failed to initialize the abcdesktop/cifs flexvolume plugin. $binary command not found. Please install the $package package."
 	fi
 }
 
 errorExit() {
 	if [[ $# -ne 1 ]] ; then
-		echo '{ "status": "Failure", "message": "Unknown error in the fstab/cifs flexvolume plugin." }'
+		echo $(date $DATEFORMAT) errorExit:Unknown error in the abcdesktop/cifs flexvolume plugin. >> $ABCDESKTOPLOGPATH/error.log
+		echo '{ "status": "Failure", "message": "Unknown error in the abcdesktop/cifs flexvolume plugin." }'
 	else
+		echo $(date $DATEFORMAT) errorExit:$1 >> $ABCDESKTOPLOGPATH/error.log
 		jq -Mcn --arg message "$1" '{ "status": "Failure", "message": $message }'
 	fi
 	exit 1
 }
 
 doMount() {
+	cifsDomain=''		# set empty string by default for domain value
+	mountDomain=''
+
 	if [[ -z ${1:-} || -z ${2:-} ]] ; then
 		errorExit "cifs mount: syntax error. usage: cifs mount <mount dir> <json options>"
 	fi
@@ -106,6 +126,10 @@ doMount() {
 	if [[ $? -ne 0 ]] ; then
 		errorExit "cifs mount: password not found. the flexVolume definition must contain a secretRef to a secret with username and password."
 	fi
+
+	cifsDomainBase64="$(jq --raw-output -e '.["kubernetes.io/secret/domain"]' <<< "$json" 2>/dev/null)"
+    # cifsDomainBase64 is an option, it can be undefined	
+
 	cifsUsername="$(base64 --decode <<< "$cifsUsernameBase64" 2>/dev/null)"
 	if [[ $? -ne 0 ]] ; then
 		errorExit "cifs mount: username secret is not base64 encoded."
@@ -114,22 +138,43 @@ doMount() {
 	if [[ $? -ne 0 ]] ; then
 		errorExit "cifs mount: password secret is not base64 encoded."
 	fi
+
+	cifsDomain="$(base64 --decode <<< "$cifsDomainBase64" 2>/dev/null)"
+	if [[ $? -eq 0 ]] ; then
+			mountOptions=$mountOptions,domain=$cifsDomain
+			echo  "$(date $DATEFORMAT) DEBUG: mountOptions=$mountOptions" >> $ABCDESKTOPLOGPATH/$cifsUsername.log
+	fi
+
 	if ! mkdir -p "$mountPoint" > /dev/null 2>&1 ; then
 		errorExit "cifs mount: failed to create mount directory: '$mountPoint'"
 	fi
-	if [[ $(mountpoint "$mountPoint") = *"is a mountpoint"* ]] ; then
-		errorExit "cifs mount: there is already a filesystem mounted under the mount directory: '$mountPoint'"
+	mountpoint "$mountPoint" 1>/dev/null 2>/dev/null
+	if [[ $? -eq 0 ]] ; then
+		echo "$(date) WARNING: cifs mount: there is already a filesystem mounted under the mount directory: $mountPoint" >> $ABCDESKTOPLOGPATH/$cifsUsername.log
+		# errorExit "cifs mount: already a mount point $mountPoint" 
+		echo { \"status\": \"Success\", \"command\": "0" }
+		exit 0
 	fi
-	if [[ ! -z $(ls -A "$mountPoint" 2>/dev/null) ]] ; then
-		errorExit "cifs mount: mount directory is not an empty directory: '$mountPoint'"
-	fi
+
+	# mount directory is not an empty directory 
+	# this is not an error
+	# if [[ ! -z $(ls -A "$mountPoint" 2>/dev/null) ]] ; then
+	#	errorExit "cifs mount: mount directory is not an empty directory: '$mountPoint'"
+	#fi
 
 	export PASSWD="$cifsPassword"
 	result=$(mount -t cifs "$networkPath" "$mountPoint" -o "username=$cifsUsername,$mountOptions" 2>&1)
-	if [[ $? -ne 0 ]] ; then
+	code=$?
+	# code is the exit code of previous command
+	if [[ $code -ne 0 ]] ; then
+		# remove the previous created directory
+		rmdir "$mountPoint" 1>/dev/null 2>>$ABCDESKTOPLOGPATH/$cifsUsername.json
+		echo  "$(date $DATEFORMAT) ERROR: cifs driver get: $json" >> $ABCDESKTOPLOGPATH/$cifsUsername.json
+		echo  "$(date $DATEFORMAT) ERROR: { \"command\": \"mount -t cifs\", \"networkPath\": \"$networkPath\", \"mountPoint\":\"$mountPoint\", \"options\":\"-o username=$cifsUsername,$mountOptions\", \"exit\": \"$code\", \"result\" : \"$result\" }" >> $ABCDESKTOPLOGPATH/$cifsUsername.log
 		errorExit "cifs mount: failed to mount the network path: $result"
 	fi
-	echo '{ "status": "Success" }'
+	echo "$(date $DATEFORMAT) SUCCESS: { \"command\": \"mount -t cifs\", \"networkPath\": \"$networkPath\", \"mountPoint\":\"$mountPoint\", \"options\":\"username=$cifsUsername,$mountOptions\", \"exit\": \"$code\", \"result\" : \"$result\" }" >> $ABCDESKTOPLOGPATH/$cifsUsername.log
+	echo { \"status\": \"Success\", \"command\": "$code" }
 	exit 0
 }
 
@@ -138,12 +183,9 @@ doUnmount() {
 		errorExit "cifs unmount: syntax error. usage: cifs unmount <mount dir>"
 	fi
 	mountPoint="$1"
-	if [[ $(mountpoint "$mountPoint") != *"is a mountpoint"* ]] ; then
-		errorExit "cifs unmount: no filesystem mounted under directory: '$mountPoint'"
-	fi
 	result=$(umount "$mountPoint" 2>&1)
 	if [[ $? -ne 0 ]] ; then
-		errorExit "cifs unmount: failed to unmount the network path: $result"
+		errorExit "cifs unmount: failed $mountPoint is not a mount $result"
 	fi
 	echo '{ "status": "Success" }'
 	exit 0
