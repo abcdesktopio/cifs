@@ -145,9 +145,11 @@ doMount() {
 			echo  "$(date $DATEFORMAT) DEBUG: mountOptions=$mountOptions" >> $ABCDESKTOPLOGPATH/$cifsUsername.log
 	fi
 
-	if ! mkdir -p "$mountPoint" > /dev/null 2>&1 ; then
+	mkdir -p "$mountPoint" > /dev/null 2>&1 
+	if [[ $? -ne 0 ]] ; then
 		errorExit "cifs mount: failed to create mount directory: '$mountPoint'"
 	fi
+
 	mountpoint "$mountPoint" 1>/dev/null 2>/dev/null
 	if [[ $? -eq 0 ]] ; then
 		echo "$(date) WARNING: cifs mount: there is already a filesystem mounted under the mount directory: $mountPoint" >> $ABCDESKTOPLOGPATH/$cifsUsername.log
@@ -157,19 +159,19 @@ doMount() {
 	fi
 
 	# mount directory is not an empty directory 
-	# this is not an error
-	# if [[ ! -z $(ls -A "$mountPoint" 2>/dev/null) ]] ; then
-	#	errorExit "cifs mount: mount directory is not an empty directory: '$mountPoint'"
-	#fi
+	if [[ ! -z $(ls -A "$mountPoint" 2>/dev/null) ]] ; then
+		errorExit "cifs mount: mount directory is not an empty directory: '$mountPoint'"
+	fi
 
 	export PASSWD="$cifsPassword"
+	echo "$(date) DEBUG: mount -t cifs $networkPath $mountPoint -o username=$cifsUsername,$mountOptions"
 	result=$(mount -t cifs "$networkPath" "$mountPoint" -o "username=$cifsUsername,$mountOptions" 2>&1)
 	code=$?
 	# code is the exit code of previous command
 	if [[ $code -ne 0 ]] ; then
 		# remove the previous created directory
 		rmdir "$mountPoint" 1>/dev/null 2>>$ABCDESKTOPLOGPATH/$cifsUsername.json
-		echo  "$(date $DATEFORMAT) ERROR: cifs driver get: $json" >> $ABCDESKTOPLOGPATH/$cifsUsername.json
+		echo  "$(date $DATEFORMAT) ERROR: cifs driver get input $json" >> $ABCDESKTOPLOGPATH/$cifsUsername.json
 		echo  "$(date $DATEFORMAT) ERROR: { \"command\": \"mount -t cifs\", \"networkPath\": \"$networkPath\", \"mountPoint\":\"$mountPoint\", \"options\":\"-o username=$cifsUsername,$mountOptions\", \"exit\": \"$code\", \"result\" : \"$result\" }" >> $ABCDESKTOPLOGPATH/$cifsUsername.log
 		errorExit "cifs mount: failed to mount the network path: $result"
 	fi
