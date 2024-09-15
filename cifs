@@ -90,6 +90,17 @@ traceDebug() {
   echo $(date $DATEFORMAT) "$1" >> $ABCDESKTOPLOGPATH/trace.log
 }
 
+errorLog() {
+ if [[ $# -ne 1 ]] ; then
+  echo $(date $DATEFORMAT) errorExit:Unknown error in the abcdesktop/cifs flexvolume plugin. >> $ABCDESKTOPLOGPATH/error.log
+  echo '{ "status": "Failure", "message": "Unknown error in the abcdesktop/cifs flexvolume plugin." }'
+ else
+  echo $(date $DATEFORMAT) errorExit:$1 >> $ABCDESKTOPLOGPATH/error.log
+  jq -Mcn --arg message "$1" '{ "status": "Failure", "message": $message }' >> $ABCDESKTOPLOGPATH/error.log
+ fi
+}
+
+
 errorExit() {
  if [[ $# -ne 1 ]] ; then
   echo $(date $DATEFORMAT) errorExit:Unknown error in the abcdesktop/cifs flexvolume plugin. >> $ABCDESKTOPLOGPATH/error.log
@@ -177,7 +188,8 @@ doMount() {
  traceDebug "mountpoint done"
  traceDebug "mountcifs"
  export PASSWD="$cifsPassword"
- traceDebug "mount -t cifs $networkPath $mountPoint -o username=$cifsUsername,$mountOptions"
+ # traceDebug "mount -t cifs $networkPath $mountPoint -o username=$cifsUsername,$mountOptions pass=$PASSWD"
+ traceDebug "mount -t cifs $networkPath $mountPoint -o username=$cifsUsername,$mountOptions pass=XXXXXXXXXXXX"
  echo "$(date) DEBUG: mount -t cifs $networkPath $mountPoint -o username=$cifsUsername,$mountOptions" >> $ABCDESKTOPLOGPATH/$cifsUsername.log
  result=$(mount -t cifs "$networkPath" "$mountPoint" -o "username=$cifsUsername,$mountOptions" 2>&1)
  code=$?
@@ -190,9 +202,20 @@ doMount() {
   rmdir "$mountPoint" 1>/dev/null 2>>$ABCDESKTOPLOGPATH/$cifsUsername.json
   echo  "$(date $DATEFORMAT) ERROR: cifs driver get input $json" >> $ABCDESKTOPLOGPATH/$cifsUsername.json
   echo  "$(date $DATEFORMAT) ERROR: { \"command\": \"mount -t cifs\", \"networkPath\": \"$networkPath\", \"mountPoint\":\"$mountPoint\", \"options\":\"-o username=$cifsUsername,$mountOptions\", \"exit\": \"$code\", \"result\" : \"$result\" }" >> $ABCDESKTOPLOGPATH/$cifsUsername.log
+  #
+  # by default return the error
+  # to pass this error
+  # this will return a fake ok
+  # code=0
+  # errorLog "cifs mount: failed to mount the network path: $result"
+  #
   errorExit "cifs mount: failed to mount the network path: $result"
- fi
- echo "$(date $DATEFORMAT) SUCCESS: { \"command\": \"mount -t cifs\", \"networkPath\": \"$networkPath\", \"mountPoint\":\"$mountPoint\", \"options\":\"username=$cifsUsername,$mountOptions\", \"exit\": \"$code\", \"result\" : \"$result\" }" >> $ABCDESKTOPLOGPATH/$cifsUsername.log
+  # errorLog "cifs mount: failed to mount the network path: $result"
+  # return fake ok
+  code=0
+else
+  echo "$(date $DATEFORMAT) SUCCESS: { \"command\": \"mount -t cifs\", \"networkPath\": \"$networkPath\", \"mountPoint\":\"$mountPoint\", \"options\":\"username=$cifsUsername,$mountOptions\", \"exit\": \"$code\", \"result\" : \"$result\" }" >> $ABCDESKTOPLOGPATH/$cifsUsername.log
+ fi 
  echo { \"status\": \"Success\", \"command\": "$code" }
  exit 0
 }
@@ -202,9 +225,42 @@ doUnmount() {
   errorExit "cifs unmount: syntax error. usage: cifs unmount <mount dir>"
  fi
  mountPoint="$1"
- result=$(umount "$mountPoint" 2>&1)
- if [[ $? -ne 0 ]] ; then
-  errorExit "cifs unmount: failed $mountPoint is not a mount $result"
+ traceDebug "doUnmount $mountPoint"
+ mountpoint "$mountPoint" 1>/dev/null 2>/dev/null
+ if [[ $? -eq 0 ]] ; then
+   traceDebug "$mountPoint is a mount point"
+   result=$(umount "$mountPoint" 2>&1)
+   if [[ $? -ne 0 ]] ; then
+     traceDebug "cifs unmount: failed $mountPoint $result"
+     # retry and sleep
+     for i in {1..5}
+     do
+        # check again if it's a mountpoint
+        mountpoint "$mountPoint" 1>/dev/null 2>/dev/null
+        if [[ $? -eq 0 ]] ; then
+                # yes it is a moint point again
+                traceDebug "$mountPoint is a mount point again, but unmount has failed, retrying $i/5, sleeping for $i s"
+                sleep $i
+                result=$(umount "$mountPoint" 2>&1)
+                if [[ $? -eq 0 ]] ; then
+                  traceDebug "doUnmount $mountPoint success after $i s, return ok"
+                  echo '{ "status": "Success" }'
+                  exit 0
+                fi
+                traceDebug "cifs unmount: retry $i failed $mountPoint $result"
+        else
+                # no it is not a mount point
+                traceDebug "$mountPoint is not a mount point, retry $i, skipping and return ok"
+                echo '{ "status": "Success" }'
+                exit 0
+        fi
+     done
+     errorExit "cifs unmount: failed $mountPoint $result"
+   else
+     traceDebug "unmount $mountPoint success $result return ok"
+   fi
+ else
+   traceDebug "$mountPoint is not a mount point, skipping and return ok"
  fi
  echo '{ "status": "Success" }'
  exit 0
